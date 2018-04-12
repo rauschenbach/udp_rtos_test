@@ -1,0 +1,47 @@
+define symbol _intvec_start = 0x00000000;
+
+/*-Memory Regions-*/
+define symbol _ROM_start  = 0x00000000;
+define symbol _ROM_end    = 0x0001ffff;
+
+/* ¬нутренн€€ пам€ть */
+define symbol _SRAM0_start  = 0x20000000;
+define symbol _SRAM0_end    = 0x20007fff;
+
+/* ¬тора€ быстра€ внутренн€€ пам€ть */
+define symbol _SRAM1_start = 0x20100000;
+define symbol _SRAM1_end   = 0x20100000 + 0x4000 - 1;
+
+/* ¬нешн€€ пам€ть */
+define symbol _XRAM_start = 0x61C00000;
+define symbol _XRAM_end   = (0x61C00000 + 0x400000 - 1);
+
+/* —тек и куча */
+define symbol _cstack_size = 0x4000;
+define symbol _heap_size   = 0x80000;
+
+
+/**** End of ICF editor section. ###ICF###*/
+
+define memory mem with size = 4G;
+define region ROM_region   = mem:[from _ROM_start to _ROM_end];
+define region SRAM0_region   = mem:[from _SRAM0_start to _SRAM0_end];
+define region SRAM1_region  = mem:[from _SRAM1_start to _SRAM1_end];
+define region XRAM_region   = mem:[from _XRAM_start to _XRAM_end];
+
+
+define block CSTACK    with alignment = 8, size = _cstack_size   { };
+define block HEAP      with alignment = 8, size = _heap_size    { };
+
+initialize by copy { readwrite };
+do not initialize  { section .noinit };
+
+keep { section .intvec };
+place at address mem: _intvec_start { readonly section .intvec };
+
+place in ROM_region    { readonly };
+place in SRAM0_region  { rw section .fastdata };
+place in SRAM1_region  { block CSTACK};
+place in XRAM_region   { block HEAP, readwrite };
+
+
