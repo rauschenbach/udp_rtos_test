@@ -1,10 +1,11 @@
 /************************************************************************************
  *
- * 	Драйвер eth 5600вг1у
+ * 	Р”СЂР°РІРµСЂ РјРёРєСЂРѕСЃС…РµРјС‹ ethernet eth 5600Р’Р“1РЈ
  *  	Copyright (c) rauschenbach 
  *      sokareis@mail.ru
  *
  ***********************************************************************************/
+
 #include "opt.h"
 #include "def.h"
 #include "mem.h"
@@ -17,15 +18,15 @@
 #include <string.h>
 #include "eth_common.h"
 
-/* Define those to better describe your network interface. */
+/* Р—Р°С‡РµРј СЌС‚Рѕ? РІСЃРµ СЂР°РІРЅРѕ РЅРµ Р±СѓРґРµРј РёСЃРєР°С‚СЊ */
 #define IFNAME0 'e'
 #define IFNAME1 '5'
 
 /* MAC address */
-#define 	FULL_MAC		"Алупка"
+#define 	FULL_MAC		"РђР»СѓРїРєР°"
 
 
-/*      <o> Базовый адрес 5-го контроллера Ethernet */
+/*  Р‘Р°Р·РѕРІС‹Р№ Р°РґСЂРµСЃ 5-РіРѕ РєРѕРЅС‚СЂРѕР»Р»РµСЂР° Ethernet */
 #define	EXT_ETH_BASE_ADDR                ETH5_BASE_ADDR
 #define	MDR_EXT_ETH_RX_BUF_BASE		(EXT_ETH_BASE_ADDR)
 #define	MDR_EXT_ETH_DSC_RX_TBL_BASE	(EXT_ETH_BASE_ADDR + 4 * 0x0800)
@@ -35,68 +36,70 @@
 #define	MDR_EXT_ETH_DSC_RX_TBL		((MDR_EXT_ETH_DSC_RX_TBL_TypeDef *)MDR_EXT_ETH_DSC_RX_TBL_BASE)
 #define	MDR_EXT_ETH_DSC_TX_TBL		((MDR_EXT_ETH_DSC_TX_TBL_TypeDef *)MDR_EXT_ETH_DSC_TX_TBL_BASE)
 #define	MDR_EXT_ETH			((MDR_EXT_ETH_TypeDef *)MDR_EXT_ETH_REGS)
+#define MDR_EXT_IRQ_NUM			EXT_INT3_IRQn
 
 
-static struct netif *s_pxNetIf = NULL;
-static xSemaphoreHandle s_xSemaphore = NULL;	/* Семафор для ожидающей задачи приема */
-static u8 RxDescNum, TxDescNum;
-static u16 *RxDst, *TxSrc;
-static u32 *RxSrc, *TxDst, *pTrBuf;
-static u16 rx_reg = 0;		/* Биты регистров по чтению */
 
-#pragma pack(1)
-__no_init static unsigned char EthFr[ETH_FRAME_SIZE] @ ".fastdata"; 
-__no_init static tEthFrame EthFrame @ ".fastdata"; 
+static struct netif *s_pxNetIf @ ".fastdata" = NULL;
+static xSemaphoreHandle s_xSemaphore @ ".fastdata" = NULL;	/* РЎРµРјР°С„РѕСЂ РґР»СЏ РѕР¶РёРґР°СЋС‰РµР№ Р·Р°РґР°С‡Рё РїСЂРёРµРјР° */
+static u8 RxDescNum @ ".fastdata" = 0;
+static u8 TxDescNum @ ".fastdata" = 0;
+static u16 *RxDst @ ".fastdata" = NULL;
+static u16 *TxSrc @ ".fastdata" = NULL;
+static u32 *RxSrc @ ".fastdata" = NULL;
+static u32 *TxDst @ ".fastdata" = NULL;
+static u32 *pTrBuf @ ".fastdata" = NULL;
+static u16 rx_reg @ ".fastdata" = 0;	/* Р‘РёС‚С‹ СЂРµРіРёСЃС‚СЂРѕРІ РїРѕ С‡С‚РµРЅРёСЋ */
 
-/////vvvvv:
-static int err_num = 0;
+#pragma pack(4)
+static unsigned char EthFr[ETH_FRAME_SIZE] @ ".fastdata" = { 0 };
+static tEthFrame EthFrame @ ".fastdata";
 
-/* Forward declarations. */
+/* Р—Р°РґР°С‡Р° Рё С„СѓРЅРєС†РёРё СЃР±СЂРѕСЃР° */
 static void eth5_if_task(void *);
 static void eth5_input(struct netif *);
 static void eth5_clr_rx(u32);
-
-
+static void eth5_clr_tx(u32);
 
 /**
- * Очистка буферов приема/передачи и дескрипторов
+ * РћС‡РёСЃС‚РєР° Р±СѓС„РµСЂРѕРІ РїСЂРёРµРјР°/РїРµСЂРµРґР°С‡Рё Рё РґРµСЃРєСЂРёРїС‚РѕСЂРѕРІ
  */
 static void EthClrRAM(void)
 {
     unsigned char i;
 
-    memset((unsigned int *) MDR_EXT_ETH_RX_BUF_BASE, 0, MDR_EXT_ETH_RX_BUF_SZ);
-    memset((unsigned int *) MDR_EXT_ETH_DSC_RX_TBL_BASE, 0, MDR_EXT_ETH_DSC_RX_TBL_SZ);
-    memset((unsigned int *) MDR_EXT_ETH_TX_BUF_BASE, 0, MDR_EXT_ETH_TX_BUF_SZ);
-    memset((unsigned int *) MDR_EXT_ETH_DSC_TX_TBL_BASE, 0, MDR_EXT_ETH_DSC_TX_TBL_SZ);
+    memset((u32 *) MDR_EXT_ETH_RX_BUF_BASE, 0, MDR_EXT_ETH_RX_BUF_SZ);
+    memset((u32 *) MDR_EXT_ETH_DSC_RX_TBL_BASE, 0, MDR_EXT_ETH_DSC_RX_TBL_SZ);
+    memset((u32 *) MDR_EXT_ETH_TX_BUF_BASE, 0, MDR_EXT_ETH_TX_BUF_SZ);
+    memset((u32 *) MDR_EXT_ETH_DSC_TX_TBL_BASE, 0, MDR_EXT_ETH_DSC_TX_TBL_SZ);
 
-    /* Дескриптор приема + разрешим прерывания */
-    for (i = 0; i < (EXT_ETH_DSC_RX_NUM_MAX - 1); i++)
+    /* Р”РµСЃРєСЂРёРїС‚РѕСЂ РїСЂРёРµРјР° + СЂР°Р·СЂРµС€РёРј РїСЂРµСЂС‹РІР°РЅРёСЏ */
+    for (i = 0; i < EXT_ETH_DSC_RX_NUM_MAX; i++)
 	MDR_EXT_ETH_DSC_RX_TBL->DSC_RX[i].CTRL |= EXT_ETH_DSC_RX_CTRL_RDY | EXT_ETH_DSC_RX_CTRL_IRQ_EN;
 
-    MDR_EXT_ETH_DSC_RX_TBL->DSC_RX[EXT_ETH_DSC_RX_NUM_MAX - 1].CTRL |= (EXT_ETH_DSC_RX_CTRL_WRAP | EXT_ETH_DSC_RX_CTRL_RDY | EXT_ETH_DSC_RX_CTRL_IRQ_EN);
+    MDR_EXT_ETH_DSC_RX_TBL->DSC_RX[EXT_ETH_DSC_RX_NUM_MAX - 1].CTRL |= EXT_ETH_DSC_RX_CTRL_WRAP;
 
-    /* Дескриптор передачи */
+    /* Р”РµСЃРєСЂРёРїС‚РѕСЂ РїРµСЂРµРґР°С‡Рё */
     MDR_EXT_ETH_DSC_TX_TBL->DSC_TX[EXT_ETH_DSC_TX_NUM_MAX - 1].CTRL |= EXT_ETH_DSC_TX_CTRL_WRAP;
 }
 
 
 /**
- * Инициализация Ethernet
+ * РРЅРёС†РёР°Р»РёР·Р°С†РёСЏ Ethernet
  */
 static void EthInit(void)
 {
     EthFrame.Data = EthFr;
 
-    /* Убираем CS если используем парал. шину */
+    /* РЈР±РёСЂР°РµРј CS РµСЃР»Рё РёСЃРїРѕР»СЊР·СѓРµРј РїР°СЂР°Р». С€РёРЅСѓ */
     eth_spi_cs_off(MDR_EXT_ETH);
 
     RxDescNum = 0;
     TxDescNum = 0;
 
-    pTrBuf = (unsigned int *) MDR_EXT_ETH_TX_BUF_BASE;
+    pTrBuf = (u32 *) MDR_EXT_ETH_TX_BUF_BASE;
 
-    /* Сброс микросхемы */
+    /* РЎР±СЂРѕСЃ РјРёРєСЂРѕСЃС…РµРјС‹ */
     MDR_EXT_ETH->GCTRL |= EXT_ETH_GCTRL_GLBL_RST;
 
     vTaskDelay(5);
@@ -104,7 +107,8 @@ static void EthInit(void)
     MDR_EXT_ETH->GCTRL =
 	(0 << EXT_ETH_GCTRL_ASYNC_MODE_Pos) | (0 << EXT_ETH_GCTRL_SPI_RST_Pos) | (1 << EXT_ETH_GCTRL_READ_CLR_STAT_Pos) | (0 << EXT_ETH_GCTRL_GLBL_RST_Pos);
 
-    MDR_EXT_ETH->MAC_CTRL = (0 << EXT_ETH_MAC_CTRL_LB_EN_Pos) | (0 << EXT_ETH_MAC_CTRL_BIG_ENDIAN_Pos) | (1 << EXT_ETH_MAC_CTRL_HALFD_EN_Pos) |	/* Полудуплекс!!! */
+    MDR_EXT_ETH->MAC_CTRL = (0 << EXT_ETH_MAC_CTRL_LB_EN_Pos) | (0 << EXT_ETH_MAC_CTRL_BIG_ENDIAN_Pos) |	/* Litle endian */
+	(1 << EXT_ETH_MAC_CTRL_HALFD_EN_Pos) |	/* РџРѕР»СѓРґСѓРїР»РµРєСЃ!!! */
 	(0 << EXT_ETH_MAC_CTRL_BCKOF_DIS_Pos) |
 	(0 << EXT_ETH_MAC_CTRL_ERR_FRAME_EN_Pos) |
 	(0 << EXT_ETH_MAC_CTRL_SHRT_FRAME_EN_Pos) |
@@ -120,7 +124,9 @@ static void EthInit(void)
 
     MDR_EXT_ETH->IPGTx = 10;
 
-    MDR_EXT_ETH->PHY_CTRL = (0 << EXT_ETH_PHY_CTRL_LB_Pos) | (0 << EXT_ETH_PHY_CTRL_DLB_Pos) | (1 << EXT_ETH_PHY_CTRL_HALFD_Pos) |	/* Полудуплекс - включается в двух местах еще в MAC  */
+    MDR_EXT_ETH->PHY_CTRL = (0 << EXT_ETH_PHY_CTRL_LB_Pos) |	/*  */
+	(0 << EXT_ETH_PHY_CTRL_DLB_Pos) |	/*  */
+	(1 << EXT_ETH_PHY_CTRL_HALFD_Pos) |	/* РџРѕР»СѓРґСѓРїР»РµРєСЃ - РІРєР»СЋС‡Р°РµС‚СЃСЏ РІ РґРІСѓС… РјРµСЃС‚Р°С… РµС‰Рµ РІ MAC  */
 	(0 << EXT_ETH_PHY_CTRL_EARLY_DV_Pos) |
 	(1 << EXT_ETH_PHY_CTRL_DIR_Pos) |
 	(0 << EXT_ETH_PHY_CTRL_BASE_2_Pos) |
@@ -131,12 +137,12 @@ static void EthInit(void)
 
     EthClrRAM();
 
-    /* Установим прерывание на ноге PC7 */
+    /* РЈСЃС‚Р°РЅРѕРІРёРј РїСЂРµСЂС‹РІР°РЅРёРµ РЅР° РЅРѕРіРµ PC7 */
     eth_irq_init(MDR_EXT_ETH);
 }
 
 /**
- * Читаем кадр Ethernet
+ * Р§РёС‚Р°РµРј РєР°РґСЂ Ethernet
  */
 static uint16_t EthReadFrame(tEthFrame * EthFrame)
 {
@@ -149,57 +155,44 @@ static uint16_t EthReadFrame(tEthFrame * EthFrame)
 
     for (i = (EthFrame->Len / 2 + (EthFrame->Len & 0x01)); i > 0; i--) {
 	*RxDst++ = *RxSrc++;
-	RxSrc = (unsigned int *) (MDR_EXT_ETH_RX_BUF_BASE | ((u32) RxSrc & MDR_EXT_ETH_RX_BUF_SZ_MSK));
+	RxSrc = (u32 *) (MDR_EXT_ETH_RX_BUF_BASE | ((u32) RxSrc & MDR_EXT_ETH_RX_BUF_SZ_MSK));
     }
 
-    i = (u16) MDR_EXT_ETH->RXBF_TAIL;
-    MDR_EXT_ETH->RXBF_HEAD = (i - 1) & MDR_EXT_ETH_TX_BUF_SZ16_MSK;
-
-    /* Взводим дескриптор */
-    MDR_EXT_ETH_DSC_RX_TBL->DSC_RX[RxDescNum].CTRL |= EXT_ETH_DSC_RX_CTRL_RDY | EXT_ETH_DSC_RX_CTRL_IRQ_EN;
-    if (RxDescNum % EXT_ETH_DSC_RX_NUM_MAX == 0) {
-	MDR_EXT_ETH_DSC_RX_TBL->DSC_RX[RxDescNum].CTRL |= EXT_ETH_DSC_RX_CTRL_WRAP;
-    }
+    MDR_EXT_ETH->RXBF_HEAD = (MDR_EXT_ETH->RXBF_TAIL - 1) & MDR_EXT_ETH_TX_BUF_SZ16_MSK;
 
     return EthFrame->Len;
 }
 
 /**
- * Отправляем кадр Ethernet
- * Дескритор необходимо модифицировать последним:
- * Длина посылки->Начальный адрес в буфере->Дескриптор!
+ * РћС‚РїСЂР°РІР»СЏРµРј РєР°РґСЂ Ethernet
+ * Р”РµСЃРєСЂРёС‚РѕСЂ РЅРµРѕР±С…РѕРґРёРјРѕ РјРѕРґРёС„РёС†РёСЂРѕРІР°С‚СЊ РїРѕСЃР»РµРґРЅРёРј:
+ * Р”Р»РёРЅР° РїРѕСЃС‹Р»РєРё->РќР°С‡Р°Р»СЊРЅС‹Р№ Р°РґСЂРµСЃ РІ Р±СѓС„РµСЂРµ->Р”РµСЃРєСЂРёРїС‚РѕСЂ!
  */
 static int8_t EthWriteFrame(tEthFrame * EthFrame)
 {
     u16 i;
+    int8_t res = ERR_MEM;
 
     if (MDR_EXT_ETH_DSC_TX_TBL->DSC_TX[TxDescNum].CTRL & EXT_ETH_DSC_TX_CTRL_RDY) {
-	return ERR_MEM;
+	eth5_clr_tx(0);
+	return res;
     }
 
     MDR_EXT_ETH_DSC_TX_TBL->DSC_TX[TxDescNum].LEN = EthFrame->Len;
-    MDR_EXT_ETH_DSC_TX_TBL->DSC_TX[TxDescNum].ADDR = (((unsigned int) pTrBuf) >> 2) & MDR_EXT_ETH_ADDR_MSK;
-
+    MDR_EXT_ETH_DSC_TX_TBL->DSC_TX[TxDescNum].ADDR = (((u32) pTrBuf) >> 2) & MDR_EXT_ETH_ADDR_MSK;
 
     TxDst = pTrBuf;
-    TxSrc = (unsigned short *) EthFrame->Data;
+    TxSrc = (u16 *) EthFrame->Data;
 
     for (i = (EthFrame->Len / 2 + (EthFrame->Len & 0x01)); i > 0; i--) {
 	*TxDst++ = *TxSrc++;
-	TxDst = (unsigned int *) (MDR_EXT_ETH_TX_BUF_BASE | ((unsigned int) TxDst & MDR_EXT_ETH_TX_BUF_SZ_MSK));
+	TxDst = (u32 *) (MDR_EXT_ETH_TX_BUF_BASE | ((u32) TxDst & MDR_EXT_ETH_TX_BUF_SZ_MSK));
     }
 
     pTrBuf = TxDst;
+    res = ERR_OK;
 
-    /* Если 2 раза пишем - не сбоит (без таймаутов) */
-    MDR_EXT_ETH_DSC_TX_TBL->DSC_TX[TxDescNum].CTRL |= EXT_ETH_DSC_TX_CTRL_RDY;
-    if (TxDescNum % EXT_ETH_DSC_TX_NUM_MAX == 0) {
-	MDR_EXT_ETH_DSC_TX_TBL->DSC_TX[TxDescNum].CTRL |= EXT_ETH_DSC_TX_CTRL_WRAP;
-    }
-
-    MDR_EXT_ETH_DSC_TX_TBL->DSC_TX[TxDescNum].CTRL |= EXT_ETH_DSC_TX_CTRL_RDY;
-
-    return ERR_OK;
+    return res;
 }
 
 /**
@@ -247,12 +240,12 @@ static void low_level_init(struct netif *netif)
 
     s_pxNetIf = netif;
 
-    /* create binary semaphore used for informing ethernetif of frame reception */
+    /* РЎРѕР·РґР°РµРј СЃС‡РµС‚РЅС‹Р№ СЃРµРјР°С„РѕСЂ РґР»СЏ Р±С‹СЃС‚СЂС‹С… СЃРѕР±С‹С‚РёР№ */
     if (s_xSemaphore == NULL) {
-	s_xSemaphore = xSemaphoreCreateBinary();
+	s_xSemaphore = xSemaphoreCreateCounting(20, 0);
     }
 
-    /* Создадим задачу, чтобы она опрашивала eth1 */
+    /* РЎРѕР·РґР°РґРёРј Р·Р°РґР°С‡Сѓ, С‡С‚РѕР±С‹ РѕРЅР° РѕРїСЂР°С€РёРІР°Р»Р° eth1 */
     xTaskCreate(eth5_if_task, "eth5 periodic", netifINTERFACE_TASK_STACK_SIZE, s_pxNetIf, netifINTERFACE_TASK_PRIORITY, &task);
     if (task == NULL) {
 	log_printf("ERROR: Create eth5 periodic Task\r\n");
@@ -261,10 +254,10 @@ static void low_level_init(struct netif *netif)
     }
     log_printf("SUCCESS: Create eth5 periodic Task. Mac addr: %s\r\n", FULL_MAC);
 
-    /* Do whatever else is needed to initialize interface. */
+    /* Phy: СЂР°Р·СЂРµС€Р°РµРј Tx Рё Rx */
     MDR_EXT_ETH->PHY_CTRL |= (EXT_ETH_PHY_CTRL_RXEN | EXT_ETH_PHY_CTRL_TXEN);
 
-    /* Печатаем содержимое регистров */
+    /* РџРµС‡Р°С‚Р°РµРј СЃРѕРґРµСЂР¶РёРјРѕРµ СЂРµРіРёСЃС‚СЂРѕРІ */
     eth_print_regs(MDR_EXT_ETH);
 }
 
@@ -283,7 +276,6 @@ static void low_level_init(struct netif *netif)
  *       to become availale since the stack doesn't retry to send a packet
  *       dropped because of memory failure (except for the TCP timers).
  */
-
 static err_t low_level_output(struct netif *netif, struct pbuf *p)
 {
     struct pbuf *q;
@@ -309,10 +301,14 @@ static err_t low_level_output(struct netif *netif, struct pbuf *p)
 
     Err = EthWriteFrame(&EthFrame);
 
-    if (TxDescNum == (EXT_ETH_DSC_TX_NUM_MAX - 1))
+    /* РњРµРЅСЏРµРј РЅРѕРјРµСЂР° РґРµСЃРєСЂРёРїС‚РѕСЂРѕРІ. Р’Р·РІРѕРґРёРј РґРµСЃРєСЂРёРїС‚РѕСЂ */
+    if (TxDescNum == (EXT_ETH_DSC_TX_NUM_MAX - 1)) {
+	MDR_EXT_ETH_DSC_TX_TBL->DSC_TX[TxDescNum].CTRL |= (EXT_ETH_DSC_TX_CTRL_WRAP | EXT_ETH_DSC_TX_CTRL_RDY | EXT_ETH_DSC_RX_CTRL_IRQ_EN);
 	TxDescNum = 0;
-    else
+    } else {
+	MDR_EXT_ETH_DSC_TX_TBL->DSC_TX[TxDescNum].CTRL |= EXT_ETH_DSC_TX_CTRL_RDY | EXT_ETH_DSC_RX_CTRL_IRQ_EN;
 	TxDescNum++;
+    }
 
 #if ETH_PAD_SIZE
     pbuf_header(p, ETH_PAD_SIZE);	/* reclaim the padding word */
@@ -403,7 +399,7 @@ err_t eth5_init(struct netif * netif)
 
     LWIP_ASSERT("netif != NULL", (netif != NULL));
 
-    eth = mem_malloc(sizeof(struct ethernetif));
+    eth = (struct ethernetif *) mem_malloc(sizeof(struct ethernetif));
     if (eth == NULL) {
 	LWIP_DEBUGF(NETIF_DEBUG, ("ethernetif_init: out of memory\n"));
 	return ERR_MEM;
@@ -456,8 +452,9 @@ static void eth5_input(struct netif *netif)
 
     /* no packet could be read, silently ignore this */
     if (p == NULL) {
+	log_printf("no packet could be read, silently ignore this\r\n");
 	return;
-      }
+    }
 
     /* points to packet payload, which starts with an Ethernet header */
     ethhdr = p->payload;
@@ -467,91 +464,68 @@ static void eth5_input(struct netif *netif)
     case ETHTYPE_IP:
     case ETHTYPE_ARP:
 
-      /* full packet send to tcpip_thread to process */
+	/* full packet send to tcpip_thread to process */
 	if (netif->input(p, netif) != ERR_OK) {
-	    LWIP_DEBUGF(NETIF_DEBUG, ("eth5_input: IP input error\n"));
+	    log_printf("eth5_input: IP input error\r\n");
 	    pbuf_free(p);
 	    p = NULL;
 	}
 	break;
 
     default:
-        pbuf_free(p);
+	pbuf_free(p);
 	p = NULL;
 	break;
     }
 }
 
-
 /**
- * Задача приема, ожидает семафора от обработчика прерываний
+ * Р—Р°РґР°С‡Р° РїСЂРёРµРјР°, РѕР¶РёРґР°РµС‚ СЃРµРјР°С„РѕСЂР° РѕС‚ РѕР±СЂР°Р±РѕС‚С‡РёРєР° РїСЂРµСЂС‹РІР°РЅРёР№
  */
 void eth5_if_task(void *pvParameters)
 {
-    for (;;) {
-
+    do {
 	if (xSemaphoreTake(s_xSemaphore, -1) == pdTRUE) {
+
+	    /* Р•СЃС‚СЊ РґР°РЅРЅС‹Рµ РїСЂРёРµРјР° */
 	    if (rx_reg & EXT_ETH_INT_RXF) {
-		/* Промотаем все номера дескрипторов */
-		for (RxDescNum = 0; RxDescNum < (EXT_ETH_DSC_RX_NUM_MAX - 1); RxDescNum++) {
-		    if ((MDR_EXT_ETH_DSC_RX_TBL->DSC_RX[RxDescNum].CTRL & EXT_ETH_DSC_RX_CTRL_RDY) == 0) {
-			eth5_input(s_pxNetIf);
+
+		if ((MDR_EXT_ETH_DSC_RX_TBL->DSC_RX[RxDescNum].CTRL & EXT_ETH_DSC_RX_CTRL_RDY) == 0) {
+		    eth5_input(s_pxNetIf);
+
+		    /* РњРµРЅСЏРµРј РґРµСЃРєСЂРёРїС‚РѕСЂ */
+		    if (RxDescNum == (EXT_ETH_DSC_RX_NUM_MAX - 1)) {
+			MDR_EXT_ETH_DSC_RX_TBL->DSC_RX[RxDescNum].CTRL |= EXT_ETH_DSC_RX_CTRL_WRAP | EXT_ETH_DSC_RX_CTRL_RDY | EXT_ETH_DSC_RX_CTRL_IRQ_EN;
+			RxDescNum = 0;
+		    } else {
+			MDR_EXT_ETH_DSC_RX_TBL->DSC_RX[RxDescNum].CTRL |= EXT_ETH_DSC_RX_CTRL_RDY | EXT_ETH_DSC_RX_CTRL_IRQ_EN;
+			RxDescNum++;
 		    }
 		}
-	    } else if (rx_reg & 0x5840) {	/* Переполнение */
-		eth5_clr_rx(rx_reg);
 	    }
+             /* Р”СЂСѓРіРёРµ С„Р»Р°РіРё РєСЂРѕРјРµ СѓСЃРїРµС€РЅРѕРіРѕ РїСЂРёРµРјР° Рё РІРѕС‚ СЌС‚РёС… */
+           if(rx_reg & ~( EXT_ETH_INT_RXF | EXT_ETH_INT_RXC | EXT_ETH_INT_RXL | EXT_ETH_INT_RXS | EXT_ETH_INT_TXF | EXT_ETH_INT_TXC)) {
+                eth5_clr_rx(rx_reg);
+  	   }
 	}
-    }
+    } while(true);
 }
-
-/**
- * Сброс приема
- */
-static void eth5_clr_rx(u32 reg)
-{
-    u8 i;
-
-    NVIC_DisableIRQ(EXT_INT3_IRQn);	/* Disable IRQ */
-
-    memset((unsigned int *) MDR_EXT_ETH_RX_BUF_BASE, 0, MDR_EXT_ETH_RX_BUF_SZ);
-    memset((unsigned int *) MDR_EXT_ETH_DSC_RX_TBL_BASE, 0, MDR_EXT_ETH_DSC_RX_TBL_SZ);
-
-    /* Дескриптор приема + разрешим прерывания */
-    for (i = 0; i < (EXT_ETH_DSC_RX_NUM_MAX - 1); i++) {
-	MDR_EXT_ETH_DSC_RX_TBL->DSC_RX[i].CTRL |= EXT_ETH_DSC_RX_CTRL_RDY | EXT_ETH_DSC_RX_CTRL_IRQ_EN;
-    }
-
-    MDR_EXT_ETH_DSC_RX_TBL->DSC_RX[EXT_ETH_DSC_RX_NUM_MAX - 1].CTRL |= (EXT_ETH_DSC_RX_CTRL_WRAP | EXT_ETH_DSC_RX_CTRL_RDY  | EXT_ETH_DSC_RX_CTRL_IRQ_EN);
-    
-    MDR_EXT_ETH->MAC_CTRL |= EXT_ETH_MAC_CTRL_RX_RST;
-
-    /* Сбросим приемник */
-    log_printf("-------------------------------\r\n");
-    log_printf("      err_num: %d", err_num++);
-    log_printf("      ERROR: 0x%04X\r\n", (u16) reg);
-    log_printf("      RX_OVF %d, RX_LOST %d\r\n", (u16) MDR_EXT_ETH->STAT_RX_OVF, (u16) MDR_EXT_ETH->STAT_RX_LOST);
-   
-    vTaskDelay(1);
-    MDR_EXT_ETH->MAC_CTRL &= ~EXT_ETH_MAC_CTRL_RX_RST;
-    NVIC_EnableIRQ(EXT_INT3_IRQn);	/* Enable IRQ */
-}
-
 
 /** 
- * Сбросить прерывание чтением 
- * и послать семафор ожидающей задаче
+ * РЎР±СЂРѕСЃРёС‚СЊ РїСЂРµСЂС‹РІР°РЅРёРµ С‡С‚РµРЅРёРµРј 
+ * Рё РїРѕСЃР»Р°С‚СЊ СЃРµРјР°С„РѕСЂ РѕР¶РёРґР°СЋС‰РµР№ Р·Р°РґР°С‡Рµ
  */
 void eth5_irq_handler(void)
 {
     portBASE_TYPE xHigherPriorityTaskWoken = pdFALSE;
 
-    /* Прочитаем причину + Clear the interrupt flags */
+    /* РџСЂРѕС‡РёС‚Р°РµРј РїСЂРёС‡РёРЅСѓ + Clear the interrupt flags */
     rx_reg = MDR_EXT_ETH->INT_SRC;
 
+    led_toggle();
 
-    /* Индикатор приема пакета и ошибок. Отправим сообщение */
-    if (rx_reg) {		/* & (EXT_ETH_INT_RXF + 0x5840)) */
+    /* РРЅРґРёРєР°С‚РѕСЂ РїСЂРёРµРјР° РїР°РєРµС‚Р° Рё РѕС€РёР±РѕРє. РћС‚РїСЂР°РІРёРј СЃРѕРѕР±С‰РµРЅРёРµ РїСЂРё Р»СЋР±РѕРј С„Р»Р°РіРµ */
+    if (rx_reg) {
 	xSemaphoreGiveFromISR(s_xSemaphore, &xHigherPriorityTaskWoken);
     }
 
@@ -559,4 +533,48 @@ void eth5_irq_handler(void)
     if (xHigherPriorityTaskWoken != pdFALSE) {
 	portEND_SWITCHING_ISR(xHigherPriorityTaskWoken);
     }
+}
+
+/**
+ * РЎР±СЂРѕСЃ РїСЂРёРµРјР°
+ */
+static void eth5_clr_rx(u32 reg)
+{
+    u8 i;
+
+    NVIC_DisableIRQ(MDR_EXT_IRQ_NUM);	/* Disable IRQ */
+
+    memset((u32 *) MDR_EXT_ETH_RX_BUF_BASE, 0, MDR_EXT_ETH_RX_BUF_SZ);
+    memset((u32 *) MDR_EXT_ETH_DSC_RX_TBL_BASE, 0, MDR_EXT_ETH_DSC_RX_TBL_SZ);
+
+    /* Р”РµСЃРєСЂРёРїС‚РѕСЂ РїСЂРёРµРјР° + СЂР°Р·СЂРµС€РёРј РїСЂРµСЂС‹РІР°РЅРёСЏ */
+    for (i = 0; i < (EXT_ETH_DSC_RX_NUM_MAX - 1); i++) {
+	MDR_EXT_ETH_DSC_RX_TBL->DSC_RX[i].CTRL |= EXT_ETH_DSC_RX_CTRL_RDY | EXT_ETH_DSC_RX_CTRL_IRQ_EN;
+    }
+    MDR_EXT_ETH_DSC_RX_TBL->DSC_RX[EXT_ETH_DSC_RX_NUM_MAX - 1].CTRL |= (EXT_ETH_DSC_RX_CTRL_WRAP | EXT_ETH_DSC_RX_CTRL_RDY | EXT_ETH_DSC_RX_CTRL_IRQ_EN);
+
+    MDR_EXT_ETH->MAC_CTRL |= EXT_ETH_MAC_CTRL_RX_RST;
+
+    /* РЎР±СЂРѕСЃРёРј РїСЂРёРµРјРЅРёРє */
+    log_printf("OVF ERROR: 0x%04X\r\n", (u16) reg);
+    log_printf("Rx miss. rx_res: %04X, desc: %04X\r\n", reg, MDR_EXT_ETH_DSC_RX_TBL->DSC_RX[RxDescNum].CTRL);
+    vTaskDelay(1);
+
+    MDR_EXT_ETH->MAC_CTRL &= ~EXT_ETH_MAC_CTRL_RX_RST;
+    NVIC_EnableIRQ(MDR_EXT_IRQ_NUM);	/* Enable IRQ */
+}
+
+/**
+ * РЎР±СЂРѕСЃ РїРµСЂРµРґР°С‡Рё
+ */
+static void eth5_clr_tx(u32 reg)
+{
+    memset((u32 *) MDR_EXT_ETH_TX_BUF_BASE, 0, MDR_EXT_ETH_TX_BUF_SZ);
+    memset((u32 *) MDR_EXT_ETH_DSC_TX_TBL_BASE, 0, MDR_EXT_ETH_DSC_TX_TBL_SZ);
+
+    /* Р”РµСЃРєСЂРёРїС‚РѕСЂ РїРµСЂРµРґР°С‡Рё */
+    MDR_EXT_ETH_DSC_TX_TBL->DSC_TX[EXT_ETH_DSC_TX_NUM_MAX - 1].CTRL |= EXT_ETH_DSC_TX_CTRL_WRAP;
+
+    log_printf("Рўx error: 0x%04X\r\n", (u16) reg);
+    log_printf(" Clear tx\r\n");
 }
