@@ -5,7 +5,6 @@
  *      sokareis@mail.ru
  *
  ***********************************************************************************/
-
 #include "opt.h"
 #include "def.h"
 #include "mem.h"
@@ -53,13 +52,13 @@ static u16 rx_reg @ ".fastdata" = 0;	/* Биты регистров по чте�
 
 #pragma pack(4)
 static unsigned char EthFr[ETH_FRAME_SIZE] @ ".fastdata" = { 0 };
-static tEthFrame EthFrame @ ".fastdata";
+static tEthFrame EthFrame @ ".fastdata" = {0};
 
 /* Задача и функции сброса */
 static void eth5_if_task(void *);
 static void eth5_input(struct netif *);
-static void eth5_clr_rx(u32);
-static void eth5_clr_tx(u32);
+static void eth5_prepare_tx_desc(void);
+static void eth5_prepare_rx_desc(void);
 
 /**
  * Очистка буферов приема/передачи и дескрипторов
@@ -99,39 +98,56 @@ static void EthInit(void)
 
     pTrBuf = (u32 *) MDR_EXT_ETH_TX_BUF_BASE;
 
-    /* Сброс микросхемы */
+    /* Сброс микросхемы. 1 - весь контроллер сброшен */
     MDR_EXT_ETH->GCTRL |= EXT_ETH_GCTRL_GLBL_RST;
 
     vTaskDelay(5);
 
+    /* Регистр управления стыка HOST-контроллер - он так называется */	
     MDR_EXT_ETH->GCTRL =
-	(0 << EXT_ETH_GCTRL_ASYNC_MODE_Pos) | (0 << EXT_ETH_GCTRL_SPI_RST_Pos) | (1 << EXT_ETH_GCTRL_READ_CLR_STAT_Pos) | (0 << EXT_ETH_GCTRL_GLBL_RST_Pos);
+	(0 << EXT_ETH_GCTRL_ASYNC_MODE_Pos) |    	/* 0 - Синхронный режим сигнала RDY */
+	(0 << EXT_ETH_GCTRL_SPI_RST_Pos) | 		/* 0 - Последовательный порт в рабочем состоянии (нам не нужен) */
+	(1 << EXT_ETH_GCTRL_READ_CLR_STAT_Pos) | 	/* 1 - При чтении регистры флагов чистяца  */
+	(0 << EXT_ETH_GCTRL_GLBL_RST_Pos);		/* 0 - Убираем ресет с микросхемы. рабочее состояние */
 
-    MDR_EXT_ETH->MAC_CTRL = (0 << EXT_ETH_MAC_CTRL_LB_EN_Pos) | (0 << EXT_ETH_MAC_CTRL_BIG_ENDIAN_Pos) |	/* Litle endian */
-	(1 << EXT_ETH_MAC_CTRL_HALFD_EN_Pos) |	/* Полудуплекс!!! */
-	(0 << EXT_ETH_MAC_CTRL_BCKOF_DIS_Pos) |
-	(0 << EXT_ETH_MAC_CTRL_ERR_FRAME_EN_Pos) |
-	(0 << EXT_ETH_MAC_CTRL_SHRT_FRAME_EN_Pos) |
-	(0 << EXT_ETH_MAC_CTRL_LONG_FRAME_EN_Pos) |
-	(0 << EXT_ETH_MAC_CTRL_CTRL_FRAME_EN_Pos) |
-	(0 << EXT_ETH_MAC_CTRL_MCA_EN_Pos) |
-	(1 << EXT_ETH_MAC_CTRL_BCA_EN_Pos) |
-	(0 << EXT_ETH_MAC_CTRL_PRO_EN_Pos) |
-	(0 << EXT_ETH_MAC_CTRL_PAUSE_EN_Pos) |
-	(0 << EXT_ETH_MAC_CTRL_DSCR_SCAN_EN_Pos) | (0 << EXT_ETH_MAC_CTRL_RX_RST_Pos) | (0 << EXT_ETH_MAC_CTRL_TX_RST_Pos);
+    /* Регистр MAC - уровня */
+    MDR_EXT_ETH->MAC_CTRL = 
+	(0 << EXT_ETH_MAC_CTRL_LB_EN_Pos) |    		/* 0- Тестовое замыкание Tx на Rx выключено */
+	(0 << EXT_ETH_MAC_CTRL_BIG_ENDIAN_Pos) |	/* 0 - Режим Litle endian */
+        (0 << EXT_ETH_MAC_CTRL_HALFD_EN_Pos) |		/* 0 - Полудуплекс отключен. Коллизии НЕ могут быть!!!  */
+        (0 << EXT_ETH_MAC_CTRL_BCKOF_DIS_Pos) |         /* 0 - Отключение интервала ожидания случае коллизии */
+/*  0 */	(1 << EXT_ETH_MAC_CTRL_ERR_FRAME_EN_Pos) |	/* Пакеты с ошибками не принимаем */
+/*  0 */	(1 << EXT_ETH_MAC_CTRL_SHRT_FRAME_EN_Pos) |	/* Короткие пакеты не принимаем */
+/*  0 */	(1 << EXT_ETH_MAC_CTRL_LONG_FRAME_EN_Pos) |	/* Длинные пакеты не приниамем */
+/*  0 */	(1 << EXT_ETH_MAC_CTRL_CTRL_FRAME_EN_Pos) |	/* Управляющие пакеты не приниаем */
+	(0 << EXT_ETH_MAC_CTRL_MCA_EN_Pos) |		/* 0 - вЫключение приема по HASH таблице */
+	(1 << EXT_ETH_MAC_CTRL_BCA_EN_Pos) |		/* 1 - Широковещательные пакеты принимаем */
+	(0 << EXT_ETH_MAC_CTRL_PRO_EN_Pos) |		/* 0 - Promisc. режим отключаем */
+        (1 << EXT_ETH_MAC_CTRL_PAUSE_EN_Pos) |		/* 1 - Пакет PAUSE обрабатывается автоматически */
+	(0 << EXT_ETH_MAC_CTRL_DSCR_SCAN_EN_Pos) |      /* 0 - При неготовности RDY - ожидание этого же дескриптора */
+	(0 << EXT_ETH_MAC_CTRL_RX_RST_Pos) | 		/* 0 - Приемник НЕ сброшен */
+	(0 << EXT_ETH_MAC_CTRL_TX_RST_Pos);		/* 0 - Передатчик НЕ сброшен */
 
-    MDR_EXT_ETH->COLL_CONF = (0 << EXT_ETH_COLL_CONF_COLL_WND_Pos) | (0 << EXT_ETH_COLL_CONF_RETRY_LIM_Pos);
+    /* Настройка окна коллизий - поменять!!! */		
+    MDR_EXT_ETH->COLL_CONF = 
+	(5 << EXT_ETH_COLL_CONF_COLL_WND_Pos) | 
+	(5 << EXT_ETH_COLL_CONF_RETRY_LIM_Pos);
 
-    MDR_EXT_ETH->IPGTx = 10;
+    MDR_EXT_ETH->IPGTx = 10;                            /*  Минимальный интервал отправки пакетов */
 
-    MDR_EXT_ETH->PHY_CTRL = (0 << EXT_ETH_PHY_CTRL_LB_Pos) |	/*  */
-	(0 << EXT_ETH_PHY_CTRL_DLB_Pos) |	/*  */
-	(1 << EXT_ETH_PHY_CTRL_HALFD_Pos) |	/* Полудуплекс - включается в двух местах еще в MAC  */
-	(0 << EXT_ETH_PHY_CTRL_EARLY_DV_Pos) |
-	(1 << EXT_ETH_PHY_CTRL_DIR_Pos) |
-	(0 << EXT_ETH_PHY_CTRL_BASE_2_Pos) |
-	(7 << EXT_ETH_PHY_CTRL_LINK_PERIOD_Pos) | (0 << EXT_ETH_PHY_CTRL_RXEN_Pos) | (0 << EXT_ETH_PHY_CTRL_TXEN_Pos) | (0 << EXT_ETH_PHY_CTRL_RST_Pos);
+    MDR_EXT_ETH->PHY_CTRL = 
+	(0 << EXT_ETH_PHY_CTRL_LB_Pos) |		/* 0 - Тестовое замыкание на вЫходе PHY выключено. Штатный режим */
+	(0 << EXT_ETH_PHY_CTRL_DLB_Pos) |		/* 0 - Тестовое замыкание на входе PHY выключено. Штатный режим */
+	(0 << EXT_ETH_PHY_CTRL_HALFD_Pos) |		/* 0 - Дуплекс. включается в двух местах еще и в MAC  */
+	(0 << EXT_ETH_PHY_CTRL_EARLY_DV_Pos) |          /* 0 - Сигнал RxDV формируется вместе с первыми битами пакета  */
+	(1 << EXT_ETH_PHY_CTRL_DIR_Pos) |               /* 1 - Передача битов MSB */
+	(0 << EXT_ETH_PHY_CTRL_BASE_2_Pos) |		/* 0 - По витой паре */
+	(7 << EXT_ETH_PHY_CTRL_LINK_PERIOD_Pos) | 	/* Период LINK импульсов */
+	(0 << EXT_ETH_PHY_CTRL_RXEN_Pos) | 		/* 0 - Rx отключен */	
+	(0 << EXT_ETH_PHY_CTRL_TXEN_Pos) |              /* 0 - Tx отключен */
+	(0 << EXT_ETH_PHY_CTRL_RST_Pos);                /* 0 - Рабочее состояние PHY */
 
+    /* Маска прерываний - реагируем на всё */
     MDR_EXT_ETH->INT_MSK = 0x0000;
     MDR_EXT_ETH->INT_SRC = 0xFFFF;
 
@@ -171,13 +187,12 @@ static uint16_t EthReadFrame(tEthFrame * EthFrame)
 static int8_t EthWriteFrame(tEthFrame * EthFrame)
 {
     u16 i;
-    int8_t res = ERR_MEM;
 
     if (MDR_EXT_ETH_DSC_TX_TBL->DSC_TX[TxDescNum].CTRL & EXT_ETH_DSC_TX_CTRL_RDY) {
-	eth5_clr_tx(0);
-	return res;
+	log_printf("miss tx\r\n");
+	return ERR_MEM;
     }
-
+    
     MDR_EXT_ETH_DSC_TX_TBL->DSC_TX[TxDescNum].LEN = EthFrame->Len;
     MDR_EXT_ETH_DSC_TX_TBL->DSC_TX[TxDescNum].ADDR = (((u32) pTrBuf) >> 2) & MDR_EXT_ETH_ADDR_MSK;
 
@@ -188,11 +203,9 @@ static int8_t EthWriteFrame(tEthFrame * EthFrame)
 	*TxDst++ = *TxSrc++;
 	TxDst = (u32 *) (MDR_EXT_ETH_TX_BUF_BASE | ((u32) TxDst & MDR_EXT_ETH_TX_BUF_SZ_MSK));
     }
-
     pTrBuf = TxDst;
-    res = ERR_OK;
 
-    return res;
+    return ERR_OK;
 }
 
 /**
@@ -242,17 +255,18 @@ static void low_level_init(struct netif *netif)
 
     /* Создаем счетный семафор для быстрых событий */
     if (s_xSemaphore == NULL) {
-	s_xSemaphore = xSemaphoreCreateCounting(20, 0);
+	s_xSemaphore = xSemaphoreCreateCounting(10, 0);
+//	s_xSemaphore = xSemaphoreCreateBinary();
     }
 
     /* Создадим задачу, чтобы она опрашивала eth1 */
     xTaskCreate(eth5_if_task, "eth5 periodic", netifINTERFACE_TASK_STACK_SIZE, s_pxNetIf, netifINTERFACE_TASK_PRIORITY, &task);
     if (task == NULL) {
-	log_printf("ERROR: Create eth5 periodic Task\r\n");
+	log_printf("ERROR: Create eth%c periodic Task\r\n", IFNAME1);
 	vTaskDelete(task);
 //      configASSERT(task);
     }
-    log_printf("SUCCESS: Create eth5 periodic Task. Mac addr: %s\r\n", FULL_MAC);
+    log_printf("SUCCESS: Create eth%c periodic Task. Mac addr: %s\r\n", IFNAME1, FULL_MAC);
 
     /* Phy: разрешаем Tx и Rx */
     MDR_EXT_ETH->PHY_CTRL |= (EXT_ETH_PHY_CTRL_RXEN | EXT_ETH_PHY_CTRL_TXEN);
@@ -280,28 +294,53 @@ static err_t low_level_output(struct netif *netif, struct pbuf *p)
 {
     struct pbuf *q;
     int framelen = 0;
-
     err_t Err;
 
+    static xSemaphoreHandle xTxSemaphore = NULL;
+
+    if (xTxSemaphore == NULL) {
+	vSemaphoreCreateBinary(xTxSemaphore);
+    }
+
+    if (xSemaphoreTake(xTxSemaphore, netifGUARD_BLOCK_TIME)) {
+
 #if ETH_PAD_SIZE
-    pbuf_header(p, -ETH_PAD_SIZE);	/* drop the padding word */
+	pbuf_header(p, -ETH_PAD_SIZE);	/* drop the padding word */
 #endif
 
-    for (q = p; q != NULL; q = q->next) {
-	/* Send the data from the pbuf to the interface, one pbuf at a
-	   time. The size of the data in each pbuf is kept in the ->len
-	   variable. */
-	memcpy(&EthFrame.Data[framelen], q->payload, q->len);
-	framelen += q->len;
+	for (q = p; q != NULL; q = q->next) {
+	    /* Send the data from the pbuf to the interface, one pbuf at a
+	       time. The size of the data in each pbuf is kept in the ->len
+	       variable. */
+	    memcpy(&EthFrame.Data[framelen], q->payload, q->len);
+	    framelen += q->len;
+	}
+	/* The above memcpy() reduces the system performance, but 
+	   it has to be done, as the RTE ethernet driver expects only
+	   one and continuous packet data buffer. */
+	EthFrame.Len = framelen;
+
+	Err = EthWriteFrame(&EthFrame);
+
+	/* Взводим дескриптор */
+	eth5_prepare_tx_desc();
+
+#if ETH_PAD_SIZE
+	pbuf_header(p, ETH_PAD_SIZE);	/* reclaim the padding word */
+#endif
+
+	LINK_STATS_INC(link.xmit);
+	xSemaphoreGive(xTxSemaphore);
     }
-    /* The above memcpy() reduces the system performance, but 
-       it has to be done, as the RTE ethernet driver expects only
-       one and continuous packet data buffer. */
-    EthFrame.Len = framelen;
 
-    Err = EthWriteFrame(&EthFrame);
+    return Err;
+}
 
-    /* Меняем номера дескрипторов. Взводим дескриптор */
+/**
+ * Меняем номера дескрипторов.
+ */
+static void eth5_prepare_tx_desc(void)
+{
     if (TxDescNum == (EXT_ETH_DSC_TX_NUM_MAX - 1)) {
 	MDR_EXT_ETH_DSC_TX_TBL->DSC_TX[TxDescNum].CTRL |= (EXT_ETH_DSC_TX_CTRL_WRAP | EXT_ETH_DSC_TX_CTRL_RDY | EXT_ETH_DSC_RX_CTRL_IRQ_EN);
 	TxDescNum = 0;
@@ -309,15 +348,8 @@ static err_t low_level_output(struct netif *netif, struct pbuf *p)
 	MDR_EXT_ETH_DSC_TX_TBL->DSC_TX[TxDescNum].CTRL |= EXT_ETH_DSC_TX_CTRL_RDY | EXT_ETH_DSC_RX_CTRL_IRQ_EN;
 	TxDescNum++;
     }
-
-#if ETH_PAD_SIZE
-    pbuf_header(p, ETH_PAD_SIZE);	/* reclaim the padding word */
-#endif
-
-    LINK_STATS_INC(link.xmit);
-
-    return Err;
 }
+
 
 /**
  * Should allocate a pbuf and transfer the bytes of the incoming
@@ -473,6 +505,7 @@ static void eth5_input(struct netif *netif)
 	break;
 
     default:
+        log_printf("eth5_input: Not IP type: %04X\r\n", ethhdr->type);      
 	pbuf_free(p);
 	p = NULL;
 	break;
@@ -480,35 +513,55 @@ static void eth5_input(struct netif *netif)
 }
 
 /**
+ * Меняем номера дескрипторов.
+ */
+static void eth5_prepare_rx_desc(void)
+{
+    /* Меняем дескриптор */
+    if (RxDescNum == (EXT_ETH_DSC_RX_NUM_MAX - 1)) {
+	MDR_EXT_ETH_DSC_RX_TBL->DSC_RX[RxDescNum].CTRL |= EXT_ETH_DSC_RX_CTRL_WRAP | EXT_ETH_DSC_RX_CTRL_RDY | EXT_ETH_DSC_RX_CTRL_IRQ_EN;
+	__NOP();
+	RxDescNum = 0;
+    } else {
+	MDR_EXT_ETH_DSC_RX_TBL->DSC_RX[RxDescNum].CTRL |= EXT_ETH_DSC_RX_CTRL_RDY | EXT_ETH_DSC_RX_CTRL_IRQ_EN;
+	__NOP();
+	RxDescNum++;
+    }
+}
+
+
+/**
  * Задача приема, ожидает семафора от обработчика прерываний
  */
 void eth5_if_task(void *pvParameters)
 {
+    u16 desc;
     do {
-	if (xSemaphoreTake(s_xSemaphore, -1) == pdTRUE) {
+	if (xSemaphoreTake(s_xSemaphore, 100) == pdTRUE) {
 
-	    /* Есть данные приема */
-	    if (rx_reg & EXT_ETH_INT_RXF) {
 
-		if ((MDR_EXT_ETH_DSC_RX_TBL->DSC_RX[RxDescNum].CTRL & EXT_ETH_DSC_RX_CTRL_RDY) == 0) {
-		    eth5_input(s_pxNetIf);
-
-		    /* Меняем дескриптор */
-		    if (RxDescNum == (EXT_ETH_DSC_RX_NUM_MAX - 1)) {
-			MDR_EXT_ETH_DSC_RX_TBL->DSC_RX[RxDescNum].CTRL |= EXT_ETH_DSC_RX_CTRL_WRAP | EXT_ETH_DSC_RX_CTRL_RDY | EXT_ETH_DSC_RX_CTRL_IRQ_EN;
-			RxDescNum = 0;
-		    } else {
-			MDR_EXT_ETH_DSC_RX_TBL->DSC_RX[RxDescNum].CTRL |= EXT_ETH_DSC_RX_CTRL_RDY | EXT_ETH_DSC_RX_CTRL_IRQ_EN;
-			RxDescNum++;
-		    }
-		}
+	    /* Другие флаги кроме успешного приема и вот этих */
+	    if (rx_reg & 0x5840) {
+		get_info();
 	    }
-             /* Другие флаги кроме успешного приема и вот этих */
-           if(rx_reg & ~( EXT_ETH_INT_RXF | EXT_ETH_INT_RXC | EXT_ETH_INT_RXL | EXT_ETH_INT_RXS | EXT_ETH_INT_TXF | EXT_ETH_INT_TXC)) {
-                eth5_clr_rx(rx_reg);
-  	   }
+
+	    /* Читаем данные пока есть данные приема. 
+	     * у нас стоит ожидание при неготовности бита RDY 
+             */
+	    do {
+	        rx_reg = MDR_EXT_ETH->INT_SRC;
+		desc = MDR_EXT_ETH_DSC_RX_TBL->DSC_RX[RxDescNum].CTRL; 
+		if ((desc & EXT_ETH_DSC_RX_CTRL_RDY) == 0) {
+		    eth5_input(s_pxNetIf);
+		    eth5_prepare_rx_desc();
+		} else {
+  		     /* смотреть неготовность дескриптора-может здесь проблема */
+		    log_printf("descr %d isn't ready: %04X, INT_SRC: %04X\r\n", RxDescNum, desc, MDR_EXT_ETH->INT_SRC);
+	        }
+	    } while(rx_reg & (EXT_ETH_INT_RXF | EXT_ETH_INT_RXBF_FULL));
 	}
-    } while(true);
+
+    } while (true);
 }
 
 /** 
@@ -524,57 +577,57 @@ void eth5_irq_handler(void)
 
     led_toggle();
 
-    /* Индикатор приема пакета и ошибок. Отправим сообщение при любом флаге */
-    if (rx_reg) {
+    /* Индикатор приема пакета и ошибок: Прием, переполнение или потеря пакета 
+    *  Отправим сообщение при любом флаге */
+    if (rx_reg & (EXT_ETH_INT_RXF | EXT_ETH_INT_RXBF_FULL | EXT_ETH_INT_RXE)) {
 	xSemaphoreGiveFromISR(s_xSemaphore, &xHigherPriorityTaskWoken);
     }
 
-    /* Switch tasks if necessary. */
+    /* Переключить задачу */
     if (xHigherPriorityTaskWoken != pdFALSE) {
 	portEND_SWITCHING_ISR(xHigherPriorityTaskWoken);
     }
 }
 
-/**
- * Сброс приема
- */
-static void eth5_clr_rx(u32 reg)
-{
-    u8 i;
 
+void get_info()
+{
+    log_printf("\r\nINT_SRC: 0x%04X\r\n", (u16) rx_reg);
+    log_printf("RxDesc(%d): %04X\r\n", RxDescNum, (u16) MDR_EXT_ETH_DSC_RX_TBL->DSC_RX[RxDescNum].CTRL);
+    log_printf("TxDesc(%d): %04X\r\n", TxDescNum, (u16) MDR_EXT_ETH_DSC_TX_TBL->DSC_TX[TxDescNum].CTRL);
+}
+
+/**
+ * Прочитать MAC адрес
+ */
+void eth5_get_mac_addr(u8* addr)
+{
+    memcpy(addr, s_pxNetIf->hwaddr, 6);
+}
+
+
+/**
+ * Записать MAC адрес
+ */
+void eth5_set_mac_addr(u8* addr)
+{
     NVIC_DisableIRQ(MDR_EXT_IRQ_NUM);	/* Disable IRQ */
 
-    memset((u32 *) MDR_EXT_ETH_RX_BUF_BASE, 0, MDR_EXT_ETH_RX_BUF_SZ);
-    memset((u32 *) MDR_EXT_ETH_DSC_RX_TBL_BASE, 0, MDR_EXT_ETH_DSC_RX_TBL_SZ);
+    /* set MAC hardware address */
+    s_pxNetIf->hwaddr[0] = addr[0];
+    s_pxNetIf->hwaddr[1] = addr[1];
+    s_pxNetIf->hwaddr[2] = addr[2];
+    s_pxNetIf->hwaddr[3] = addr[3];
+    s_pxNetIf->hwaddr[4] = addr[4];
+    s_pxNetIf->hwaddr[5] = addr[5];
 
-    /* Дескриптор приема + разрешим прерывания */
-    for (i = 0; i < (EXT_ETH_DSC_RX_NUM_MAX - 1); i++) {
-	MDR_EXT_ETH_DSC_RX_TBL->DSC_RX[i].CTRL |= EXT_ETH_DSC_RX_CTRL_RDY | EXT_ETH_DSC_RX_CTRL_IRQ_EN;
-    }
-    MDR_EXT_ETH_DSC_RX_TBL->DSC_RX[EXT_ETH_DSC_RX_NUM_MAX - 1].CTRL |= (EXT_ETH_DSC_RX_CTRL_WRAP | EXT_ETH_DSC_RX_CTRL_RDY | EXT_ETH_DSC_RX_CTRL_IRQ_EN);
+    /* initialize MAC address in ethernet MAC */
+    MDR_EXT_ETH->MAC_ADDR[0] = (s_pxNetIf->hwaddr[1] << 8) | s_pxNetIf->hwaddr[0];
+    MDR_EXT_ETH->MAC_ADDR[1] = (s_pxNetIf->hwaddr[3] << 8) | s_pxNetIf->hwaddr[2];
+    MDR_EXT_ETH->MAC_ADDR[2] = (s_pxNetIf->hwaddr[5] << 8) | s_pxNetIf->hwaddr[4];
 
-    MDR_EXT_ETH->MAC_CTRL |= EXT_ETH_MAC_CTRL_RX_RST;
+    rx_reg = MDR_EXT_ETH->INT_SRC;
 
-    /* Сбросим приемник */
-    log_printf("OVF ERROR: 0x%04X\r\n", (u16) reg);
-    log_printf("Rx miss. rx_res: %04X, desc: %04X\r\n", reg, MDR_EXT_ETH_DSC_RX_TBL->DSC_RX[RxDescNum].CTRL);
-    vTaskDelay(1);
-
-    MDR_EXT_ETH->MAC_CTRL &= ~EXT_ETH_MAC_CTRL_RX_RST;
     NVIC_EnableIRQ(MDR_EXT_IRQ_NUM);	/* Enable IRQ */
 }
 
-/**
- * Сброс передачи
- */
-static void eth5_clr_tx(u32 reg)
-{
-    memset((u32 *) MDR_EXT_ETH_TX_BUF_BASE, 0, MDR_EXT_ETH_TX_BUF_SZ);
-    memset((u32 *) MDR_EXT_ETH_DSC_TX_TBL_BASE, 0, MDR_EXT_ETH_DSC_TX_TBL_SZ);
-
-    /* Дескриптор передачи */
-    MDR_EXT_ETH_DSC_TX_TBL->DSC_TX[EXT_ETH_DSC_TX_NUM_MAX - 1].CTRL |= EXT_ETH_DSC_TX_CTRL_WRAP;
-
-    log_printf("Тx error: 0x%04X\r\n", (u16) reg);
-    log_printf(" Clear tx\r\n");
-}
