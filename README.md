@@ -1,5 +1,5 @@
 # udp_rtos_test
-RTOS+LWIP+SOCKETS+UDP ECHO SERVER
+Milandr 1986ВЕ3 + RTOS + LWIP + SOCKETS + UDP ECHO SERVER
 
 Внешний Ethernet на микросхеме 5600ВГ1У
 драйвер для FreeRTOS в файле library/lwip/port/ethernetif/eth5_if.c
